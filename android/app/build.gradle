@@ -1,0 +1,31 @@
+plugins {
+    id "com.android.application"
+    id "kotlin-android"
+    id "dev.flutter.flutter-gradle-plugin"
+}
+
+android {
+    namespace "com.example.interactivems"
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.example.interactivems"
+        minSdk 23
+        targetSdk 35
+        versionCode 1
+        versionName "1.0.0"
+    }
+
+    buildTypes {
+        release {
+            // Debug signing is used so Codemagic can generate an installable APK
+            // without manual keystore setup. For Play Store release, replace this
+            // with your release signing config.
+            signingConfig signingConfigs.debug
+        }
+    }
+}
+
+flutter {
+    source "../.."
+}
