@@ -16,11 +16,17 @@ android {
         versionName "1.0.0"
     }
 
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+
     buildTypes {
         release {
-            // Debug signing is used so Codemagic can generate an installable APK
-            // without manual keystore setup. For Play Store release, replace this
-            // with your release signing config.
             signingConfig signingConfigs.debug
         }
     }
