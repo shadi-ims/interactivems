@@ -1,0 +1,13 @@
+workflows:
+  android-tv:
+    name: Android TV APK
+
+    environment:
+      flutter: stable
+
+    scripts:
+      - flutter pub get
+      - flutter build apk --release --target-platform android-arm64
+
+    artifacts:
+      - build/app/outputs/flutter-apk/*.apk
