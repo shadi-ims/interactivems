@@ -1,5 +1,5 @@
 name: interactivems
-description: Simple Flutter Android TV welcome app for Mi Box.
+description: IMS StreamPulse — 4-up live HLS multiview for Android TV / Mi Box.
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -9,6 +9,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  video_player: ^2.9.2
 
 dev_dependencies:
   flutter_test:
