@@ -1,24 +1,34 @@
 # IMS StreamPulse
 
-Flutter Android TV app for Mi Box that plays four live HLS channels at once
-in a 2×2 multiview grid.
+A sleek HLS multiview monitor for Android TV / Mi Box, styled after the IMS
+HLS-Streamer console: near-black panels, monospace type, amber/teal/green
+signal colors. Plays four live channels at once in a 2×2 grid.
 
 ## Channels
 
-- Al Mashhad
-- Al Sharq
-- Al Arabia
-- Al Hadath
+Al Mashhad · Al Sharq · Al Arabia · Al Hadath
+(all from `wd-stream11.widekhaliji.com:8446`)
 
-## How it works
+## Per-stream controls
 
-- Each quadrant loads its HLS stream independently and shows a loading
-  spinner until the first frame is ready; a failed stream shows a
-  **Retry** button instead of blocking the others.
-- All tiles play muted by default to avoid four overlapping audio tracks.
-  On the Mi Box remote, move the D-pad to focus a tile (amber border) and
-  press OK/center to route audio to that tile; press again to mute. The
-  active tile shows a speaker badge.
+Each panel has three D-pad / touch-friendly buttons (amber focus glow):
+
+- **Audio** — routes sound to that panel and mutes the others (four
+  simultaneous audio tracks would be unusable, so all start muted).
+- **Refresh** (⟳) — tears down and re-initializes just that stream without
+  touching the other three, and re-reads its master playlist.
+- **Info** (ⓘ) — opens a full **Stream Monitor** for that channel.
+
+## Live info on each panel
+
+Every tile overlays real telemetry: channel name, a pulsing **LIVE** badge,
+the active **resolution**, **buffer** seconds, and a **profile count**
+(`N PROF`) parsed live from the channel's master playlist.
+
+The Stream Monitor expands this into the dashboard view: source URL, current
+status / resolution / active bitrate / buffer, and a **STREAM PROFILES** grid
+— one card per variant with resolution, peak & average Mbps, FPS, codec
+string, and chunk path, with the currently-playing variant marked **ACTIVE**.
 
 ## Build command for Mi Box
 
@@ -27,24 +37,19 @@ flutter pub get
 flutter build apk --release --target-platform android-arm64
 ```
 
-The APK is created at:
-
-```text
-build/app/outputs/flutter-apk/app-release.apk
-```
+APK output: `build/app/outputs/flutter-apk/app-release.apk`
 
 ## Codemagic
 
-Push this project to GitHub, connect it to Codemagic, then run the
-`android-tv` workflow to produce the APK.
+Push to GitHub, connect to Codemagic, run the `android-tv` workflow.
 
 ## Notes
 
-- Requires the `INTERNET` permission (declared in the manifest).
-- Streaming four hardware-decoded video feeds at once can exceed the
-  simultaneous decoder limit on lower-end Android TV boxes. If a tile
-  stays black on the device, that's the most likely cause — drop to a
-  lower ABR variant or fewer tiles.
-- The release build is still signed with the debug key and uses the
-  `com.example.interactivems` application id; set a real keystore and
-  package name before any Play Store distribution.
+- Requires `INTERNET` (declared). Profile parsing uses `package:http`;
+  video uses `video_player` (ExoPlayer/media3, native HLS).
+- Profile parsing validates TLS. If a feed ever uses a self-signed cert the
+  video will still play but the profile panel will read "unreachable".
+- Decoding four hardware video feeds at once can exceed the simultaneous
+  decoder limit on low-end TV boxes; a black tile (others fine) points there.
+- Release build still uses the debug key and `com.example.interactivems`
+  application id — set a real keystore and package before store distribution.
