@@ -394,36 +394,77 @@ class _TopBar extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       height: 40,
-      padding: const EdgeInsets.symmetric(horizontal: 14),
+      padding: const EdgeInsets.symmetric(horizontal: 12),
       decoration: const BoxDecoration(
         color: P.panel,
         border: Border(bottom: BorderSide(color: P.border)),
       ),
-      child: Row(
-        children: [
-          const PulseDot(color: P.green),
-          const SizedBox(width: 9),
-          Text('IMS', style: mono(color: P.amber, size: 14, weight: FontWeight.w700, spacing: 1.5)),
-          const SizedBox(width: 6),
-          Text('STREAMPULSE',
-              style: mono(color: Colors.white, size: 14, weight: FontWeight.w700, spacing: 1.5)),
-          const SizedBox(width: 14),
-          const Eyebrow('INST', color: P.greyDim, size: 9),
-          const SizedBox(width: 5),
-          Text(instanceName, style: mono(color: P.teal, size: 11, weight: FontWeight.w700)),
-          if (usingFallback) ...[
-            const SizedBox(width: 8),
-            const Pill('OFFLINE CFG', color: P.magenta),
-          ],
-          const Spacer(),
-          Text('$count up', style: mono(color: P.grey, size: 11)),
-          const SizedBox(width: 12),
-          Text(host, style: mono(color: P.grey, size: 11)),
-          const SizedBox(width: 12),
-          const _Clock(),
-          const SizedBox(width: 10),
-          FocusIconButton(icon: Icons.tune_rounded, label: 'SETUP', onPressed: onSettings),
-        ],
+      child: LayoutBuilder(
+        builder: (context, c) {
+          // Phones / portrait are narrow: drop the secondary metadata and
+          // keep only brand + (tappable) instance + SETUP so the button can
+          // never be pushed off-screen.
+          final compact = c.maxWidth < 600;
+          return Row(
+            children: [
+              const PulseDot(color: P.green),
+              const SizedBox(width: 9),
+              Text('IMS',
+                  style: mono(color: P.amber, size: 14, weight: FontWeight.w700, spacing: 1.5)),
+              if (!compact) ...[
+                const SizedBox(width: 6),
+                Text('STREAMPULSE',
+                    style: mono(color: Colors.white, size: 14, weight: FontWeight.w700, spacing: 1.5)),
+              ],
+              const SizedBox(width: 12),
+              // Tappable instance — opens the picker (acts as the "dropdown").
+              Expanded(
+                child: InkWell(
+                  onTap: onSettings,
+                  borderRadius: BorderRadius.circular(4),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 5),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Eyebrow('INST', color: P.greyDim, size: 9),
+                        const SizedBox(width: 5),
+                        Flexible(
+                          child: Text(instanceName,
+                              overflow: TextOverflow.ellipsis,
+                              style: mono(color: P.teal, size: 11, weight: FontWeight.w700)),
+                        ),
+                        const Icon(Icons.arrow_drop_down_rounded, color: P.teal, size: 18),
+                        if (usingFallback) ...[
+                          const SizedBox(width: 8),
+                          const Pill('OFFLINE CFG', color: P.magenta),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              if (!compact) ...[
+                Text('$count up', style: mono(color: P.grey, size: 11)),
+                const SizedBox(width: 12),
+                Flexible(
+                  child: Text(host,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.right,
+                      style: mono(color: P.grey, size: 11)),
+                ),
+                const SizedBox(width: 12),
+                const _Clock(),
+                const SizedBox(width: 10),
+              ],
+              FocusIconButton(
+                icon: Icons.tune_rounded,
+                label: compact ? null : 'SETUP',
+                onPressed: onSettings,
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -490,14 +531,17 @@ class _SettingsOverlay extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final screen = MediaQuery.of(context).size;
+    final w = screen.width - 32 < 560 ? screen.width - 32 : 560.0;
+    final h = screen.height - 80 < 560 ? screen.height - 80 : 560.0;
     return Positioned.fill(
       child: Container(
         color: Colors.black.withOpacity(0.82),
         alignment: Alignment.center,
         child: FocusTraversalGroup(
           child: Container(
-            width: 560,
-            constraints: const BoxConstraints(maxHeight: 560),
+            width: w,
+            constraints: BoxConstraints(maxHeight: h),
             padding: const EdgeInsets.all(22),
             decoration: panelDecoration(),
             child: Column(
