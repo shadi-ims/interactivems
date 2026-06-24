@@ -30,6 +30,46 @@ status / resolution / active bitrate / buffer, and a **STREAM PROFILES** grid
 — one card per variant with resolution, peak & average Mbps, FPS, codec
 string, and chunk path, with the currently-playing variant marked **ACTIVE**.
 
+## Walls (instances) & stream count
+
+Streams are not hard-coded — the app loads them from a PHP endpoint per
+**instance** (a "wall"):
+
+```
+https://interactivems.net/ims/streampulse/app/{instance}
+```
+
+Open **SETUP** (top-right) to pick how many streams to show — **2, 4, or 6**
+(default **4**) — and to switch instances. The grid adapts: 2 → side-by-side,
+4 → 2×2, 6 → 3×2. If the endpoint can't be reached the app falls back to the
+four built-in channels and flags `OFFLINE CFG`.
+
+The instance list comes from `…/app/` and each wall from `…/app/{instance}`.
+See `server/` for the PHP that produces both (and `lib/config.dart` for the
+client side).
+
+## Always-highest quality (no ABR ramp-up)
+
+Previously a tile opened on a low rendition and only climbed to full quality
+after a refresh, because ExoPlayer's bitrate estimator starts conservatively —
+and `video_player` exposes no track-selection API to override it. The app now
+reads each master playlist, picks the **highest** variant, and points the
+player straight at that variant's media playlist. Every tile opens at full
+resolution immediately. Trade-off: a pinned variant won't auto-downswitch if
+the network can't sustain it, so on a constrained link a tile may buffer
+rather than drop quality — which is the right behavior for a monitoring wall.
+
+## Server (PHP endpoint)
+
+`server/index.php` + `server/.htaccess` go in `…/ims/streampulse/app/`. Edit
+the `$INSTANCES` array to define walls and add channels. It also accepts
+`?i={instance}` if your host doesn't do URL rewriting. JSON shape:
+
+```
+GET …/app/            -> { "instances": [ {"id","name","count"}, … ] }
+GET …/app/{instance}  -> { "instance","name", "streams":[ {"name","url"}, … ] }
+```
+
 ## Build command for Mi Box
 
 ```bash

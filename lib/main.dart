@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 
+import 'config.dart';
 import 'hls.dart';
 import 'ui.dart';
 
@@ -44,7 +45,8 @@ class Channel {
   final String url;
 }
 
-const List<Channel> kChannels = [
+/// Used only if the config endpoint can't be reached, so the app still runs.
+const List<Channel> kFallbackStreams = [
   Channel('Al Mashhad',
       'https://wd-stream11.widekhaliji.com:8446/almashhad/abr_live/playlist.m3u8'),
   Channel('Al Sharq',
@@ -55,13 +57,16 @@ const List<Channel> kChannels = [
       'https://wd-stream11.widekhaliji.com:8446/alhadath/abr_live/playlist.m3u8'),
 ];
 
+const List<int> kCountOptions = [2, 4, 6];
+
 // ---------------------------------------------------------------------------
 // Session: owns one channel's player + parsed profiles, survives a refresh.
+// Pins playback to the highest variant so a tile opens at full quality
+// instead of waiting for ExoPlayer's ABR estimator to ramp up.
 // ---------------------------------------------------------------------------
 class StreamSession extends ChangeNotifier {
   StreamSession(this.channel) {
     start();
-    loadProfiles();
   }
 
   final Channel channel;
@@ -74,29 +79,53 @@ class StreamSession extends ChangeNotifier {
   bool profilesLoading = true;
   String? profilesError;
 
-  bool audioOn = false;
+  /// The variant actually being played (the highest), for the monitor.
+  HlsProfile? pinned;
 
+  bool audioOn = false;
   int _gen = 0;
 
   Future<void> start() async {
     final gen = ++_gen;
 
-    // Tear the old player down up front; the panel shows CONNECTING meanwhile.
     final old = controller;
     controller = null;
     initializing = true;
     hasError = false;
+    profilesLoading = true;
+    profilesError = null;
+    pinned = null;
     notifyListeners();
     await old?.dispose();
 
+    // 1) Resolve the master playlist and pick the top profile to pin.
+    var playUrl = channel.url;
+    try {
+      final profs = await fetchHlsProfiles(channel.url);
+      if (gen != _gen) return;
+      profiles = profs;
+      profilesError = profs.isEmpty ? 'no variants found' : null;
+      if (profs.isNotEmpty && profs.first.uri.isNotEmpty) {
+        pinned = profs.first; // sorted highest-resolution first
+        playUrl = Uri.parse(channel.url).resolve(profs.first.uri).toString();
+      }
+    } catch (_) {
+      profilesError = 'master playlist unreachable';
+      // Fall back to the master URL (ExoPlayer ABR) if parsing failed.
+    } finally {
+      profilesLoading = false;
+      notifyListeners();
+    }
+
+    // 2) Play the pinned variant (or master fallback).
     final c = VideoPlayerController.networkUrl(
-      Uri.parse(channel.url),
+      Uri.parse(playUrl),
       videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
     );
     try {
       await c.initialize();
       if (gen != _gen) {
-        await c.dispose(); // a newer refresh superseded this one
+        await c.dispose();
         return;
       }
       await c.setVolume(audioOn ? 1.0 : 0.0);
@@ -116,21 +145,6 @@ class StreamSession extends ChangeNotifier {
 
   Future<void> refresh() => start();
 
-  Future<void> loadProfiles() async {
-    profilesLoading = true;
-    profilesError = null;
-    notifyListeners();
-    try {
-      profiles = await fetchHlsProfiles(channel.url);
-      profilesError = profiles.isEmpty ? 'no variants found' : null;
-    } catch (_) {
-      profilesError = 'master playlist unreachable';
-    } finally {
-      profilesLoading = false;
-      notifyListeners();
-    }
-  }
-
   void setAudio(bool on) {
     audioOn = on;
     controller?.setVolume(on ? 1.0 : 0.0);
@@ -145,7 +159,7 @@ class StreamSession extends ChangeNotifier {
 }
 
 // ---------------------------------------------------------------------------
-// Home: top status bar + 2x2 grid.
+// Home: top status bar + adaptive grid (2 / 4 / 6) + settings overlay.
 // ---------------------------------------------------------------------------
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key});
@@ -155,9 +169,27 @@ class HomeShell extends StatefulWidget {
 }
 
 class _HomeShellState extends State<HomeShell> {
-  late final List<StreamSession> _sessions =
-      kChannels.map(StreamSession.new).toList();
+  String _instance = kDefaultInstance;
+  String _instanceName = kDefaultInstance;
+  int _count = 4; // default
+
+  List<Channel> _streams = const [];
+  List<StreamSession> _sessions = [];
   int _activeAudio = -1;
+
+  bool _configLoading = true;
+  bool _usingFallback = false;
+
+  bool _settingsOpen = false;
+  List<InstanceRef> _instances = const [];
+  bool _instancesLoading = false;
+  String? _instancesError;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadConfig(_instance);
+  }
 
   @override
   void dispose() {
@@ -167,13 +199,78 @@ class _HomeShellState extends State<HomeShell> {
     super.dispose();
   }
 
+  Future<void> _loadConfig(String instance) async {
+    setState(() => _configLoading = true);
+    try {
+      final cfg = await fetchInstance(instance);
+      if (cfg.streams.isEmpty) throw Exception('no streams');
+      _instance = cfg.instance;
+      _instanceName = cfg.name;
+      _streams = cfg.streams.map((s) => Channel(s.name, s.url)).toList();
+      _usingFallback = false;
+    } catch (_) {
+      _instance = instance;
+      _instanceName = instance;
+      _streams = kFallbackStreams;
+      _usingFallback = true;
+    }
+    _configLoading = false;
+    _rebuildSessions();
+  }
+
+  void _rebuildSessions() {
+    for (final s in _sessions) {
+      s.dispose();
+    }
+    final n = _count <= _streams.length ? _count : _streams.length;
+    _sessions = _streams.take(n).map((c) => StreamSession(c)).toList();
+    _activeAudio = -1;
+    if (mounted) setState(() {});
+  }
+
+  void _setCount(int c) {
+    if (c == _count) return;
+    setState(() => _count = c);
+    _rebuildSessions();
+  }
+
+  void _selectInstance(String id) {
+    setState(() => _settingsOpen = false);
+    _loadConfig(id);
+  }
+
+  Future<void> _openSettings() async {
+    setState(() {
+      _settingsOpen = true;
+      _instancesLoading = true;
+      _instancesError = null;
+    });
+    try {
+      final list = await fetchInstances();
+      if (!mounted) return;
+      setState(() {
+        _instances = list;
+        _instancesLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _instances = const [];
+        _instancesLoading = false;
+        _instancesError = 'instance list unavailable';
+      });
+    }
+  }
+
   void _toggleAudio(int i) {
     setState(() {
       if (_activeAudio == i) {
         _sessions[i].setAudio(false);
         _activeAudio = -1;
       } else {
-        if (_activeAudio >= 0) _sessions[_activeAudio].setAudio(false);
+        if (_activeAudio >= 0 && _activeAudio < _sessions.length) {
+          _sessions[_activeAudio].setAudio(false);
+        }
         _sessions[i].setAudio(true);
         _activeAudio = i;
       }
@@ -184,38 +281,92 @@ class _HomeShellState extends State<HomeShell> {
   Widget build(BuildContext context) {
     return Scaffold(
       body: SafeArea(
-        child: Column(
+        child: Stack(
           children: [
-            const _TopBar(),
-            Expanded(
-              child: FocusTraversalGroup(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
-                  child: Column(
-                    children: [
-                      Expanded(child: _row(0, 1)),
-                      const SizedBox(height: 8),
-                      Expanded(child: _row(2, 3)),
-                    ],
+            Column(
+              children: [
+                _TopBar(
+                  host: _hostLabel(),
+                  instanceName: _instanceName,
+                  count: _sessions.length,
+                  usingFallback: _usingFallback,
+                  onSettings: _openSettings,
+                ),
+                Expanded(
+                  child: FocusTraversalGroup(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                      child: _body(),
+                    ),
                   ),
                 ),
-              ),
+              ],
             ),
+            if (_settingsOpen)
+              _SettingsOverlay(
+                instance: _instance,
+                count: _count,
+                instances: _instances,
+                loading: _instancesLoading,
+                error: _instancesError,
+                onCount: _setCount,
+                onInstance: _selectInstance,
+                onClose: () => setState(() => _settingsOpen = false),
+              ),
           ],
         ),
       ),
     );
   }
 
-  Widget _row(int a, int b) => Row(
-        children: [
-          Expanded(child: _cell(a)),
-          const SizedBox(width: 8),
-          Expanded(child: _cell(b)),
-        ],
+  String _hostLabel() {
+    if (_streams.isNotEmpty) {
+      try {
+        return Uri.parse(_streams.first.url).authority;
+      } catch (_) {}
+    }
+    return Uri.parse(kBaseUrl).authority;
+  }
+
+  Widget _body() {
+    if (_configLoading) {
+      return const Center(
+        child: _Status(
+            title: 'LOADING CONFIG…', subtitle: 'fetching instance', color: P.amber, spinner: true),
       );
+    }
+    if (_sessions.isEmpty) {
+      return const Center(
+        child: _Status(title: 'NO STREAMS', subtitle: 'check instance', color: P.magenta),
+      );
+    }
+    return _grid();
+  }
+
+  // Adaptive layout: 2 -> 1x2, 4 -> 2x2, 6 -> 2x3.
+  Widget _grid() {
+    final n = _sessions.length;
+    final cols = n <= 2 ? n : (n <= 4 ? 2 : 3);
+    final rows = (n / cols).ceil();
+
+    final rowWidgets = <Widget>[];
+    for (var r = 0; r < rows; r++) {
+      final cells = <Widget>[];
+      for (var col = 0; col < cols; col++) {
+        if (col > 0) cells.add(const SizedBox(width: 8));
+        final idx = r * cols + col;
+        cells.add(Expanded(
+          child: idx < n ? _cell(idx) : const SizedBox(),
+        ));
+      }
+      if (r > 0) rowWidgets.add(const SizedBox(height: 8));
+      rowWidgets.add(Expanded(child: Row(children: cells)));
+    }
+    return Column(children: rowWidgets);
+  }
 
   Widget _cell(int i) => StreamPanel(
+        key: ValueKey('${_instance}_${_sessions[i].channel.url}_$i'),
         session: _sessions[i],
         index: i,
         audioActive: _activeAudio == i,
@@ -225,11 +376,22 @@ class _HomeShellState extends State<HomeShell> {
 }
 
 class _TopBar extends StatelessWidget {
-  const _TopBar();
+  const _TopBar({
+    required this.host,
+    required this.instanceName,
+    required this.count,
+    required this.usingFallback,
+    required this.onSettings,
+  });
+
+  final String host;
+  final String instanceName;
+  final int count;
+  final bool usingFallback;
+  final VoidCallback onSettings;
 
   @override
   Widget build(BuildContext context) {
-    final host = Uri.parse(kChannels.first.url).authority;
     return Container(
       height: 40,
       padding: const EdgeInsets.symmetric(horizontal: 14),
@@ -245,12 +407,22 @@ class _TopBar extends StatelessWidget {
           const SizedBox(width: 6),
           Text('STREAMPULSE',
               style: mono(color: Colors.white, size: 14, weight: FontWeight.w700, spacing: 1.5)),
-          const SizedBox(width: 12),
-          Text('hls multiview', style: mono(color: P.grey, size: 11)),
-          const Spacer(),
-          Text(host, style: mono(color: P.grey, size: 11)),
           const SizedBox(width: 14),
+          const Eyebrow('INST', color: P.greyDim, size: 9),
+          const SizedBox(width: 5),
+          Text(instanceName, style: mono(color: P.teal, size: 11, weight: FontWeight.w700)),
+          if (usingFallback) ...[
+            const SizedBox(width: 8),
+            const Pill('OFFLINE CFG', color: P.magenta),
+          ],
+          const Spacer(),
+          Text('$count up', style: mono(color: P.grey, size: 11)),
+          const SizedBox(width: 12),
+          Text(host, style: mono(color: P.grey, size: 11)),
+          const SizedBox(width: 12),
           const _Clock(),
+          const SizedBox(width: 10),
+          FocusIconButton(icon: Icons.tune_rounded, label: 'SETUP', onPressed: onSettings),
         ],
       ),
     );
@@ -290,6 +462,197 @@ class _ClockState extends State<_Clock> {
   @override
   Widget build(BuildContext context) =>
       Text(_now, style: mono(color: P.teal, size: 12, weight: FontWeight.w600, spacing: 1));
+}
+
+// ---------------------------------------------------------------------------
+// Settings overlay: stream count (2/4/6) + instance picker.
+// ---------------------------------------------------------------------------
+class _SettingsOverlay extends StatelessWidget {
+  const _SettingsOverlay({
+    required this.instance,
+    required this.count,
+    required this.instances,
+    required this.loading,
+    required this.error,
+    required this.onCount,
+    required this.onInstance,
+    required this.onClose,
+  });
+
+  final String instance;
+  final int count;
+  final List<InstanceRef> instances;
+  final bool loading;
+  final String? error;
+  final ValueChanged<int> onCount;
+  final ValueChanged<String> onInstance;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned.fill(
+      child: Container(
+        color: Colors.black.withOpacity(0.82),
+        alignment: Alignment.center,
+        child: FocusTraversalGroup(
+          child: Container(
+            width: 560,
+            constraints: const BoxConstraints(maxHeight: 560),
+            padding: const EdgeInsets.all(22),
+            decoration: panelDecoration(),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    Text('SETUP',
+                        style: mono(color: P.amber, size: 16, weight: FontWeight.w700, spacing: 2)),
+                    const Spacer(),
+                    FocusIconButton(
+                      icon: Icons.close_rounded,
+                      label: 'CLOSE',
+                      autofocus: true,
+                      onPressed: onClose,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                const Eyebrow('STREAMS', color: P.teal, size: 11),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    for (final c in kCountOptions) ...[
+                      _PickButton(
+                        label: '$c',
+                        selected: c == count,
+                        onTap: () => onCount(c),
+                      ),
+                      const SizedBox(width: 10),
+                    ],
+                  ],
+                ),
+                const SizedBox(height: 22),
+                Row(
+                  children: [
+                    const Eyebrow('INSTANCE', color: P.teal, size: 11),
+                    const SizedBox(width: 10),
+                    if (loading)
+                      Text('loading…', style: mono(color: P.grey, size: 11)),
+                    if (error != null)
+                      Text(error!, style: mono(color: P.magenta, size: 11)),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Flexible(child: _instanceList()),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _instanceList() {
+    if (loading) return const SizedBox(height: 40);
+    if (instances.isEmpty) {
+      // Still let the user keep the current instance.
+      return _PickButton(
+        label: instance,
+        sub: 'current',
+        selected: true,
+        onTap: () => onInstance(instance),
+      );
+    }
+    return SingleChildScrollView(
+      child: Column(
+        children: [
+          for (final ins in instances) ...[
+            _PickButton(
+              label: ins.name,
+              sub: '${ins.id} · ${ins.count} streams',
+              selected: ins.id == instance,
+              wide: true,
+              onTap: () => onInstance(ins.id),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Focusable selectable button (text), amber on focus, teal when selected.
+class _PickButton extends StatefulWidget {
+  const _PickButton({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+    this.sub,
+    this.wide = false,
+    this.autofocus = false,
+  });
+
+  final String label;
+  final String? sub;
+  final bool selected;
+  final bool wide;
+  final bool autofocus;
+  final VoidCallback onTap;
+
+  @override
+  State<_PickButton> createState() => _PickButtonState();
+}
+
+class _PickButtonState extends State<_PickButton> {
+  bool _focused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final border = _focused ? P.amber : (widget.selected ? P.teal : P.border);
+    final fg = _focused ? P.amber : (widget.selected ? P.teal : P.grey);
+    return InkWell(
+      autofocus: widget.autofocus,
+      onTap: widget.onTap,
+      onFocusChange: (f) => setState(() => _focused = f),
+      borderRadius: BorderRadius.circular(6),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 120),
+        width: widget.wide ? double.infinity : null,
+        padding: EdgeInsets.symmetric(horizontal: widget.wide ? 14 : 20, vertical: 12),
+        decoration: BoxDecoration(
+          color: _focused ? P.amber.withOpacity(0.14) : Colors.black.withOpacity(0.3),
+          border: Border.all(color: border, width: _focused || widget.selected ? 1.5 : 1),
+          borderRadius: BorderRadius.circular(6),
+          boxShadow: _focused ? [BoxShadow(color: P.amber.withOpacity(0.4), blurRadius: 10)] : null,
+        ),
+        child: Row(
+          mainAxisSize: widget.wide ? MainAxisSize.max : MainAxisSize.min,
+          children: [
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(widget.label,
+                    style: mono(color: fg, size: 14, weight: FontWeight.w700, spacing: 0.5)),
+                if (widget.sub != null) ...[
+                  const SizedBox(height: 3),
+                  Text(widget.sub!, style: mono(color: P.greyDim, size: 10)),
+                ],
+              ],
+            ),
+            if (widget.wide) const Spacer(),
+            if (widget.selected)
+              Padding(
+                padding: const EdgeInsets.only(left: 10),
+                child: Icon(Icons.check_rounded, size: 16, color: P.teal),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -396,11 +759,14 @@ class _StreamPanelState extends State<StreamPanel> {
           children: [
             const PulseDot(color: P.green, size: 7),
             const SizedBox(width: 7),
-            Text(widget.session.channel.name,
-                style: mono(color: Colors.white, size: 13, weight: FontWeight.w700, spacing: 0.5)),
+            Expanded(
+              child: Text(widget.session.channel.name,
+                  overflow: TextOverflow.ellipsis,
+                  style: mono(color: Colors.white, size: 13, weight: FontWeight.w700, spacing: 0.5)),
+            ),
             const SizedBox(width: 8),
             const Pill('LIVE', color: P.green),
-            const Spacer(),
+            const SizedBox(width: 8),
             Text(profileChip,
                 style: mono(color: P.teal, size: 10, weight: FontWeight.w600, spacing: 0.8)),
           ],
@@ -552,7 +918,6 @@ class MonitorScreen extends StatelessWidget {
                   _metricStrip(),
                   const SizedBox(height: 22),
                   Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
                       const Eyebrow('STREAM PROFILES', color: P.teal, size: 12),
                       const SizedBox(width: 10),
@@ -562,6 +927,8 @@ class MonitorScreen extends StatelessWidget {
                             : '${session.profiles.length} profiles',
                         style: mono(color: P.grey, size: 11),
                       ),
+                      const SizedBox(width: 10),
+                      const Pill('TOP PINNED', color: P.amber),
                     ],
                   ),
                   const SizedBox(height: 12),
@@ -584,26 +951,26 @@ class MonitorScreen extends StatelessWidget {
             onPressed: () => Navigator.of(context).maybePop(),
           ),
           const SizedBox(width: 16),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Eyebrow('STREAM MONITOR', color: P.grey, size: 10),
-              const SizedBox(height: 3),
-              Text(session.channel.name,
-                  style: mono(color: Colors.white, size: 22, weight: FontWeight.w700, spacing: 0.5)),
-            ],
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Eyebrow('STREAM MONITOR', color: P.grey, size: 10),
+                const SizedBox(height: 3),
+                Text(session.channel.name,
+                    overflow: TextOverflow.ellipsis,
+                    style: mono(color: Colors.white, size: 22, weight: FontWeight.w700, spacing: 0.5)),
+              ],
+            ),
           ),
           const SizedBox(width: 14),
           const Pill('LIVE', color: P.green, filled: true),
-          const Spacer(),
+          const SizedBox(width: 14),
           FocusIconButton(
             icon: Icons.refresh_rounded,
             label: 'REFRESH',
             color: P.amber,
-            onPressed: () {
-              session.refresh();
-              session.loadProfiles();
-            },
+            onPressed: session.refresh,
           ),
         ],
       );
@@ -670,9 +1037,11 @@ class MonitorScreen extends StatelessWidget {
         : '—';
     final buf = init ? '${_bufferAhead(v!).toStringAsFixed(1)}s' : '—';
 
-    // Infer active bitrate from the profile matching the current size.
+    // Active bitrate = the pinned (highest) profile, else size match.
     String bitrate = '—';
-    if (init && v!.size.width > 0) {
+    if (session.pinned?.peakMbps != null) {
+      bitrate = '${session.pinned!.peakMbps} Mbps';
+    } else if (init && v!.size.width > 0) {
       for (final p in session.profiles) {
         if (p.matchesSize(v.size.width, v.size.height) && p.peakMbps != null) {
           bitrate = '${p.peakMbps} Mbps';
@@ -722,9 +1091,7 @@ class MonitorScreen extends StatelessWidget {
       );
     }
 
-    final c = session.controller;
-    final size = (c?.value.isInitialized ?? false) ? c!.value.size : null;
-
+    final pinned = session.pinned;
     return Wrap(
       spacing: 12,
       runSpacing: 12,
@@ -732,7 +1099,7 @@ class MonitorScreen extends StatelessWidget {
         for (final p in session.profiles)
           _ProfileCard(
             profile: p,
-            active: size != null && p.matchesSize(size.width, size.height),
+            active: pinned != null && identical(p, pinned),
           ),
       ],
     );
