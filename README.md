@@ -40,9 +40,16 @@ https://interactivems.net/ims/streampulse/app/{instance}
 ```
 
 Open **SETUP** (top-right) to pick how many streams to show — **2, 4, or 6**
-(default **4**) — and to switch instances. The grid adapts: 2 → side-by-side,
-4 → 2×2, 6 → 3×2. If the endpoint can't be reached the app falls back to the
-four built-in channels and flags `OFFLINE CFG`.
+(default **4**) — to choose **FIT vs FILL** (see below), and to switch
+instances. The grid adapts: 2 → side-by-side, 4 → 2×2, 6 → 3×2. If the
+endpoint can't be reached the app falls back to the four built-in channels and
+flags `OFFLINE CFG`.
+
+**FIT vs FILL.** Tiles often aren't exactly 16:9 (a 2-up tile is tall and
+narrow), so **FILL** (crop to edges) zooms the 16:9 frame to fill the tile and
+cuts off the sides/tickers. **FIT** (default) shows the entire frame with thin
+letterbox bars — the right choice for monitoring, since you keep the lower-
+thirds and ticker. Toggle it live in SETUP.
 
 The instance list comes from `…/app/` and each wall from `…/app/{instance}`.
 See `server/` for the PHP that produces both (and `lib/config.dart` for the

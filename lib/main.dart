@@ -186,6 +186,7 @@ class _HomeShellState extends State<HomeShell> {
   bool _usingFallback = false;
 
   bool _settingsOpen = false;
+  bool _fillMode = false; // false = fit whole frame, true = fill/crop
   List<InstanceRef> _instances = const [];
   bool _instancesLoading = false;
   String? _instancesError;
@@ -239,6 +240,11 @@ class _HomeShellState extends State<HomeShell> {
     if (c == _count) return;
     setState(() => _count = c);
     _rebuildSessions();
+  }
+
+  void _setFill(bool fill) {
+    if (fill == _fillMode) return;
+    setState(() => _fillMode = fill);
   }
 
   void _selectInstance(String id) {
@@ -316,10 +322,12 @@ class _HomeShellState extends State<HomeShell> {
               _SettingsOverlay(
                 instance: _instance,
                 count: _count,
+                fill: _fillMode,
                 instances: _instances,
                 loading: _instancesLoading,
                 error: _instancesError,
                 onCount: _setCount,
+                onFill: _setFill,
                 onInstance: _selectInstance,
                 onClose: () => setState(() => _settingsOpen = false),
               ),
@@ -381,6 +389,7 @@ class _HomeShellState extends State<HomeShell> {
         index: i,
         audioActive: _activeAudio == i,
         autofocus: i == 0,
+        fill: _fillMode,
         onToggleAudio: () => _toggleAudio(i),
       );
 }
@@ -567,20 +576,24 @@ class _SettingsOverlay extends StatelessWidget {
   const _SettingsOverlay({
     required this.instance,
     required this.count,
+    required this.fill,
     required this.instances,
     required this.loading,
     required this.error,
     required this.onCount,
+    required this.onFill,
     required this.onInstance,
     required this.onClose,
   });
 
   final String instance;
   final int count;
+  final bool fill;
   final List<InstanceRef> instances;
   final bool loading;
   final String? error;
   final ValueChanged<int> onCount;
+  final ValueChanged<bool> onFill;
   final ValueChanged<String> onInstance;
   final VoidCallback onClose;
 
@@ -629,6 +642,26 @@ class _SettingsOverlay extends StatelessWidget {
                       ),
                       const SizedBox(width: 10),
                     ],
+                  ],
+                ),
+                const SizedBox(height: 20),
+                const Eyebrow('VIDEO', color: P.teal, size: 11),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    _PickButton(
+                      label: 'FIT',
+                      sub: 'whole frame',
+                      selected: !fill,
+                      onTap: () => onFill(false),
+                    ),
+                    const SizedBox(width: 10),
+                    _PickButton(
+                      label: 'FILL',
+                      sub: 'crop to edges',
+                      selected: fill,
+                      onTap: () => onFill(true),
+                    ),
                   ],
                 ),
                 const SizedBox(height: 22),
@@ -764,6 +797,7 @@ class StreamPanel extends StatefulWidget {
     required this.audioActive,
     required this.onToggleAudio,
     this.autofocus = false,
+    this.fill = false,
     super.key,
   });
 
@@ -772,6 +806,7 @@ class StreamPanel extends StatefulWidget {
   final bool audioActive;
   final VoidCallback onToggleAudio;
   final bool autofocus;
+  final bool fill;
 
   @override
   State<StreamPanel> createState() => _StreamPanelState();
@@ -826,13 +861,16 @@ class _StreamPanelState extends State<StreamPanel> {
       );
     }
     final size = c.value.size;
-    return FittedBox(
-      fit: BoxFit.cover,
-      clipBehavior: Clip.hardEdge,
-      child: SizedBox(
-        width: size.width <= 0 ? 16 : size.width,
-        height: size.height <= 0 ? 9 : size.height,
-        child: VideoPlayer(c),
+    return ColoredBox(
+      color: Colors.black,
+      child: FittedBox(
+        fit: widget.fill ? BoxFit.cover : BoxFit.contain,
+        clipBehavior: Clip.hardEdge,
+        child: SizedBox(
+          width: size.width <= 0 ? 16 : size.width,
+          height: size.height <= 0 ? 9 : size.height,
+          child: VideoPlayer(c),
+        ),
       ),
     );
   }
