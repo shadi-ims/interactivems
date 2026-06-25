@@ -48,16 +48,19 @@ The instance list comes from `…/app/` and each wall from `…/app/{instance}`.
 See `server/` for the PHP that produces both (and `lib/config.dart` for the
 client side).
 
-## Always-highest quality (no ABR ramp-up)
+## Quality: instant + sized to the tile (no ABR ramp-up, no overload)
 
-Previously a tile opened on a low rendition and only climbed to full quality
-after a refresh, because ExoPlayer's bitrate estimator starts conservatively —
-and `video_player` exposes no track-selection API to override it. The app now
-reads each master playlist, picks the **highest** variant, and points the
-player straight at that variant's media playlist. Every tile opens at full
-resolution immediately. Trade-off: a pinned variant won't auto-downswitch if
-the network can't sustain it, so on a constrained link a tile may buffer
-rather than drop quality — which is the right behavior for a monitoring wall.
+A tile used to open on a low rendition and only climb after a refresh, because
+ExoPlayer's bitrate estimator starts conservatively — and `video_player`
+exposes no track-selection API to override it. The app now reads each master
+playlist and **pins a specific variant immediately**, so there's no ramp-up.
+
+The pinned variant is **matched to how big the tile actually is**: a quarter-
+screen tile in a 2×2 doesn't need 1080p. By stream count the per-tile cap is
+2 → 720p, 4 → 540p, 6 → 360p (single/full-screen → highest). This keeps the
+picture crisp while cutting decode work several-fold, so 4–6 streams stay
+smooth on a Mi Box instead of stuttering under four simultaneous 1080p decodes.
+Tune the caps in `_variantCapFor()` in `lib/main.dart` if your box is beefier.
 
 ## Server (PHP endpoint)
 

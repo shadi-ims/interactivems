@@ -65,11 +65,15 @@ const List<int> kCountOptions = [2, 4, 6];
 // instead of waiting for ExoPlayer's ABR estimator to ramp up.
 // ---------------------------------------------------------------------------
 class StreamSession extends ChangeNotifier {
-  StreamSession(this.channel) {
+  StreamSession(this.channel, {this.maxHeight}) {
     start();
   }
 
   final Channel channel;
+
+  /// Cap the chosen variant to this height. Keeps a multi-view light on TV
+  /// boxes (4×1080p decode is too heavy for a Mi Box). null = pick highest.
+  final int? maxHeight;
 
   VideoPlayerController? controller;
   bool initializing = true;
@@ -105,9 +109,10 @@ class StreamSession extends ChangeNotifier {
       if (gen != _gen) return;
       profiles = profs;
       profilesError = profs.isEmpty ? 'no variants found' : null;
-      if (profs.isNotEmpty && profs.first.uri.isNotEmpty) {
-        pinned = profs.first; // sorted highest-resolution first
-        playUrl = Uri.parse(channel.url).resolve(profs.first.uri).toString();
+      final pick = _selectVariant(profs, maxHeight);
+      if (pick != null && pick.uri.isNotEmpty) {
+        pinned = pick;
+        playUrl = Uri.parse(channel.url).resolve(pick.uri).toString();
       }
     } catch (_) {
       profilesError = 'master playlist unreachable';
@@ -223,7 +228,9 @@ class _HomeShellState extends State<HomeShell> {
       s.dispose();
     }
     final n = _count <= _streams.length ? _count : _streams.length;
-    _sessions = _streams.take(n).map((c) => StreamSession(c)).toList();
+    final cap = _variantCapFor(n);
+    _sessions =
+        _streams.take(n).map((c) => StreamSession(c, maxHeight: cap)).toList();
     _activeAudio = -1;
     if (mounted) setState(() {});
   }
@@ -283,24 +290,27 @@ class _HomeShellState extends State<HomeShell> {
       body: SafeArea(
         child: Stack(
           children: [
-            Column(
-              children: [
-                _TopBar(
-                  host: _hostLabel(),
-                  instanceName: _instanceName,
-                  count: _sessions.length,
-                  usingFallback: _usingFallback,
-                  onSettings: _openSettings,
-                ),
-                Expanded(
-                  child: FocusTraversalGroup(
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
-                      child: _body(),
+            ExcludeFocus(
+              excluding: _settingsOpen,
+              child: Column(
+                children: [
+                  _TopBar(
+                    host: _hostLabel(),
+                    instanceName: _instanceName,
+                    count: _sessions.length,
+                    usingFallback: _usingFallback,
+                    onSettings: _openSettings,
+                  ),
+                  Expanded(
+                    child: FocusTraversalGroup(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                        child: _body(),
+                      ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
             if (_settingsOpen)
               _SettingsOverlay(
@@ -417,31 +427,12 @@ class _TopBar extends StatelessWidget {
                     style: mono(color: Colors.white, size: 14, weight: FontWeight.w700, spacing: 1.5)),
               ],
               const SizedBox(width: 12),
-              // Tappable instance — opens the picker (acts as the "dropdown").
+              // Tappable instance — opens the picker (acts as the dropdown).
               Expanded(
-                child: InkWell(
+                child: _InstanceTab(
+                  instanceName: instanceName,
+                  usingFallback: usingFallback,
                   onTap: onSettings,
-                  borderRadius: BorderRadius.circular(4),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 5),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Eyebrow('INST', color: P.greyDim, size: 9),
-                        const SizedBox(width: 5),
-                        Flexible(
-                          child: Text(instanceName,
-                              overflow: TextOverflow.ellipsis,
-                              style: mono(color: P.teal, size: 11, weight: FontWeight.w700)),
-                        ),
-                        const Icon(Icons.arrow_drop_down_rounded, color: P.teal, size: 18),
-                        if (usingFallback) ...[
-                          const SizedBox(width: 8),
-                          const Pill('OFFLINE CFG', color: P.magenta),
-                        ],
-                      ],
-                    ),
-                  ),
                 ),
               ),
               if (!compact) ...[
@@ -465,6 +456,70 @@ class _TopBar extends StatelessWidget {
             ],
           );
         },
+      ),
+    );
+  }
+}
+
+/// The instance selector in the top bar: focusable, lights amber on D-pad
+/// focus (and teal otherwise) with a dropdown chevron, so it's obvious the
+/// remote is on it.
+class _InstanceTab extends StatefulWidget {
+  const _InstanceTab({
+    required this.instanceName,
+    required this.usingFallback,
+    required this.onTap,
+  });
+
+  final String instanceName;
+  final bool usingFallback;
+  final VoidCallback onTap;
+
+  @override
+  State<_InstanceTab> createState() => _InstanceTabState();
+}
+
+class _InstanceTabState extends State<_InstanceTab> {
+  bool _focused = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = _focused ? P.amber : P.teal;
+    return InkWell(
+      onTap: widget.onTap,
+      onFocusChange: (f) => setState(() => _focused = f),
+      borderRadius: BorderRadius.circular(5),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 120),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+        decoration: BoxDecoration(
+          color: _focused ? P.amber.withOpacity(0.16) : Colors.transparent,
+          border: Border.all(
+            color: _focused ? P.amber : P.border,
+            width: _focused ? 1.5 : 1,
+          ),
+          borderRadius: BorderRadius.circular(5),
+          boxShadow: _focused
+              ? [BoxShadow(color: P.amber.withOpacity(0.4), blurRadius: 10)]
+              : null,
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Eyebrow('INST', color: _focused ? P.amber : P.greyDim, size: 9),
+            const SizedBox(width: 5),
+            Flexible(
+              child: Text(widget.instanceName,
+                  overflow: TextOverflow.ellipsis,
+                  style: mono(color: accent, size: 11, weight: FontWeight.w700)),
+            ),
+            Icon(Icons.arrow_drop_down_rounded, color: accent, size: 18),
+            if (widget.usingFallback) ...[
+              const SizedBox(width: 8),
+              const Pill('OFFLINE CFG', color: P.magenta),
+            ],
+          ],
+        ),
       ),
     );
   }
@@ -884,6 +939,28 @@ class _StreamPanelState extends State<StreamPanel> {
   }
 }
 
+/// Pick which variant to pin. Profiles are sorted highest-first.
+/// With a [cap], choose the highest whose height fits; if all exceed the cap,
+/// fall back to the smallest available. Without a cap, choose the highest.
+HlsProfile? _selectVariant(List<HlsProfile> profs, int? cap) {
+  if (profs.isEmpty) return null;
+  if (cap == null) return profs.first;
+  for (final p in profs) {
+    if ((p.height ?? 0) <= cap) return p;
+  }
+  return profs.last;
+}
+
+/// Per-tile resolution budget by how many tiles are on screen. A tile in a
+/// 2×2 grid is only a quarter of the screen, so 540p looks identical to 1080p
+/// there while cutting decode work ~4×.
+int? _variantCapFor(int n) {
+  if (n <= 1) return null; // single, full screen -> highest
+  if (n == 2) return 720;
+  if (n <= 4) return 540;
+  return 360; // 6-up
+}
+
 double _bufferAhead(VideoPlayerValue v) {
   final pos = v.position;
   for (final r in v.buffered) {
@@ -972,7 +1049,8 @@ class MonitorScreen extends StatelessWidget {
                         style: mono(color: P.grey, size: 11),
                       ),
                       const SizedBox(width: 10),
-                      const Pill('TOP PINNED', color: P.amber),
+                      Pill(session.maxHeight == null ? 'TOP PINNED' : 'AUTO-FIT',
+                          color: P.amber),
                     ],
                   ),
                   const SizedBox(height: 12),
@@ -1150,44 +1228,62 @@ class MonitorScreen extends StatelessWidget {
   }
 }
 
-class _ProfileCard extends StatelessWidget {
+class _ProfileCard extends StatefulWidget {
   const _ProfileCard({required this.profile, required this.active});
   final HlsProfile profile;
   final bool active;
 
   @override
+  State<_ProfileCard> createState() => _ProfileCardState();
+}
+
+class _ProfileCardState extends State<_ProfileCard> {
+  bool _focused = false;
+
+  @override
   Widget build(BuildContext context) {
-    final p = profile;
-    return Container(
-      width: 300,
-      padding: const EdgeInsets.all(14),
-      decoration: panelDecoration(accent: active ? P.teal : null),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Text(p.resLabel,
-                  style: mono(color: Colors.white, size: 17, weight: FontWeight.w700, spacing: 0.5)),
-              const SizedBox(width: 10),
-              if (active) const Pill('ACTIVE', color: P.teal, filled: true),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Wrap(
-            spacing: 14,
-            runSpacing: 4,
-            children: [
-              if (p.peakMbps != null) _kv('PEAK', '${p.peakMbps} Mbps', P.amber),
-              if (p.avgMbps != null) _kv('AVG', '${p.avgMbps} Mbps', P.grey),
-              if (p.fpsLabel != null) _kv('FPS', p.fpsLabel!, P.grey),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Text(p.codecLabel, style: mono(color: P.greyDim, size: 10.5)),
-          const SizedBox(height: 2),
-          Text(p.chunkLabel, style: mono(color: P.teal, size: 10.5)),
-        ],
+    final p = widget.profile;
+    // Focusable so the D-pad can move into the list; focus traversal then
+    // scrolls the parent to keep the focused card on screen.
+    return InkWell(
+      onTap: () {},
+      onFocusChange: (f) => setState(() => _focused = f),
+      borderRadius: BorderRadius.circular(6),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 120),
+        width: 300,
+        padding: const EdgeInsets.all(14),
+        decoration: panelDecoration(
+          focused: _focused,
+          accent: widget.active ? P.teal : null,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Text(p.resLabel,
+                    style: mono(color: Colors.white, size: 17, weight: FontWeight.w700, spacing: 0.5)),
+                const SizedBox(width: 10),
+                if (widget.active) const Pill('ACTIVE', color: P.teal, filled: true),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 14,
+              runSpacing: 4,
+              children: [
+                if (p.peakMbps != null) _kv('PEAK', '${p.peakMbps} Mbps', P.amber),
+                if (p.avgMbps != null) _kv('AVG', '${p.avgMbps} Mbps', P.grey),
+                if (p.fpsLabel != null) _kv('FPS', p.fpsLabel!, P.grey),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Text(p.codecLabel, style: mono(color: P.greyDim, size: 10.5)),
+            const SizedBox(height: 2),
+            Text(p.chunkLabel, style: mono(color: P.teal, size: 10.5)),
+          ],
+        ),
       ),
     );
   }
