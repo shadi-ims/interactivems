@@ -95,6 +95,9 @@ Push to GitHub, connect to Codemagic, run the `android-tv` workflow.
 
 ## Notes
 
+- The screen is kept on while the app is foreground (`FLAG_KEEP_SCREEN_ON`
+  in `MainActivity.kt`), so the Android TV screensaver never interrupts a
+  monitoring wall. No permission required; it clears when the app closes.
 - Requires `INTERNET` (declared). Profile parsing uses `package:http`;
   video uses `video_player` (ExoPlayer/media3, native HLS).
 - Profile parsing validates TLS. If a feed ever uses a self-signed cert the
