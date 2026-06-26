@@ -40,10 +40,21 @@ https://interactivems.net/ims/streampulse/app/{instance}
 ```
 
 Open **SETUP** (top-right) to pick how many streams to show — **2, 4, or 6**
-(default **4**) — to choose **FIT vs FILL** (see below), and to switch
-instances. The grid adapts: 2 → side-by-side, 4 → 2×2, 6 → 3×2. If the
-endpoint can't be reached the app falls back to the four built-in channels and
-flags `OFFLINE CFG`.
+(default **4**) — to choose **FIT vs FILL** (see below), to set **QUALITY**,
+and to switch instances. The grid adapts: 2 → side-by-side, 4 → 2×2, 6 → 3×2.
+If the endpoint can't be reached the app falls back to the four built-in
+channels and flags `OFFLINE CFG`.
+
+**QUALITY.** Defaults to **AUTO** (each tile sized to the grid — light on the
+box). You can override it in one click for all streams: **1080p / 720p / 540p /
+360p** pins every tile to the highest variant at or below that height. Use a
+lower setting if a box struggles, or 1080p on a strong box/network.
+
+**Remote Back button.** While SETUP is open, Back closes the popup instead of
+exiting the app.
+
+**Persistence.** The last stream count, FIT/FILL, QUALITY, and instance are
+saved (via `shared_preferences`) and restored on next launch.
 
 **FIT vs FILL.** Tiles often aren't exactly 16:9 (a 2-up tile is tall and
 narrow), so **FILL** (crop to edges) zooms the 16:9 frame to fill the tile and

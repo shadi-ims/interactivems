@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
 
 import 'config.dart';
@@ -187,14 +188,43 @@ class _HomeShellState extends State<HomeShell> {
 
   bool _settingsOpen = false;
   bool _fillMode = false; // false = fit whole frame, true = fill/crop
+  int? _qualityOverride; // null = AUTO (size to tile count); else max height
   List<InstanceRef> _instances = const [];
   bool _instancesLoading = false;
   String? _instancesError;
 
+  SharedPreferences? _prefs;
+
   @override
   void initState() {
     super.initState();
+    _restoreThenLoad();
+  }
+
+  Future<void> _restoreThenLoad() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      _prefs = p;
+      final c = p.getInt('count');
+      if (c != null && kCountOptions.contains(c)) _count = c;
+      _fillMode = p.getBool('fill') ?? false;
+      final q = p.getInt('quality');
+      _qualityOverride = (q == null || q <= 0) ? null : q;
+      _instance = p.getString('instance') ?? kDefaultInstance;
+    } catch (_) {
+      // prefs unavailable -> defaults
+    }
+    if (mounted) setState(() {});
     _loadConfig(_instance);
+  }
+
+  void _persist() {
+    final p = _prefs;
+    if (p == null) return;
+    p.setInt('count', _count);
+    p.setBool('fill', _fillMode);
+    p.setInt('quality', _qualityOverride ?? -1);
+    p.setString('instance', _instance);
   }
 
   @override
@@ -229,7 +259,7 @@ class _HomeShellState extends State<HomeShell> {
       s.dispose();
     }
     final n = _count <= _streams.length ? _count : _streams.length;
-    final cap = _variantCapFor(n);
+    final cap = _qualityOverride ?? _variantCapFor(n);
     _sessions =
         _streams.take(n).map((c) => StreamSession(c, maxHeight: cap)).toList();
     _activeAudio = -1;
@@ -239,16 +269,27 @@ class _HomeShellState extends State<HomeShell> {
   void _setCount(int c) {
     if (c == _count) return;
     setState(() => _count = c);
+    _persist();
     _rebuildSessions();
   }
 
   void _setFill(bool fill) {
     if (fill == _fillMode) return;
     setState(() => _fillMode = fill);
+    _persist();
+  }
+
+  void _setQuality(int? cap) {
+    if (cap == _qualityOverride) return;
+    setState(() => _qualityOverride = cap);
+    _persist();
+    _rebuildSessions(); // reconnect every stream at the new quality (one click)
   }
 
   void _selectInstance(String id) {
     setState(() => _settingsOpen = false);
+    _instance = id;
+    _persist();
     _loadConfig(id);
   }
 
@@ -292,46 +333,57 @@ class _HomeShellState extends State<HomeShell> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: SafeArea(
-        child: Stack(
-          children: [
-            ExcludeFocus(
-              excluding: _settingsOpen,
-              child: Column(
-                children: [
-                  _TopBar(
-                    host: _hostLabel(),
-                    instanceName: _instanceName,
-                    count: _sessions.length,
-                    usingFallback: _usingFallback,
-                    onSettings: _openSettings,
-                  ),
-                  Expanded(
-                    child: FocusTraversalGroup(
-                      child: Padding(
-                        padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
-                        child: _body(),
+    return PopScope(
+      // When the SETUP popup is open, the remote Back button closes it
+      // instead of popping the app. Otherwise Back behaves normally.
+      canPop: !_settingsOpen,
+      onPopInvoked: (didPop) {
+        if (didPop) return;
+        if (_settingsOpen) setState(() => _settingsOpen = false);
+      },
+      child: Scaffold(
+        body: SafeArea(
+          child: Stack(
+            children: [
+              ExcludeFocus(
+                excluding: _settingsOpen,
+                child: Column(
+                  children: [
+                    _TopBar(
+                      host: _hostLabel(),
+                      instanceName: _instanceName,
+                      count: _sessions.length,
+                      usingFallback: _usingFallback,
+                      onSettings: _openSettings,
+                    ),
+                    Expanded(
+                      child: FocusTraversalGroup(
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                          child: _body(),
+                        ),
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ),
-            if (_settingsOpen)
-              _SettingsOverlay(
-                instance: _instance,
-                count: _count,
-                fill: _fillMode,
-                instances: _instances,
-                loading: _instancesLoading,
-                error: _instancesError,
-                onCount: _setCount,
-                onFill: _setFill,
-                onInstance: _selectInstance,
-                onClose: () => setState(() => _settingsOpen = false),
-              ),
-          ],
+              if (_settingsOpen)
+                _SettingsOverlay(
+                  instance: _instance,
+                  count: _count,
+                  fill: _fillMode,
+                  quality: _qualityOverride,
+                  instances: _instances,
+                  loading: _instancesLoading,
+                  error: _instancesError,
+                  onCount: _setCount,
+                  onFill: _setFill,
+                  onQuality: _setQuality,
+                  onInstance: _selectInstance,
+                  onClose: () => setState(() => _settingsOpen = false),
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -577,11 +629,13 @@ class _SettingsOverlay extends StatelessWidget {
     required this.instance,
     required this.count,
     required this.fill,
+    required this.quality,
     required this.instances,
     required this.loading,
     required this.error,
     required this.onCount,
     required this.onFill,
+    required this.onQuality,
     required this.onInstance,
     required this.onClose,
   });
@@ -589,11 +643,13 @@ class _SettingsOverlay extends StatelessWidget {
   final String instance;
   final int count;
   final bool fill;
+  final int? quality;
   final List<InstanceRef> instances;
   final bool loading;
   final String? error;
   final ValueChanged<int> onCount;
   final ValueChanged<bool> onFill;
+  final ValueChanged<int?> onQuality;
   final ValueChanged<String> onInstance;
   final VoidCallback onClose;
 
@@ -662,6 +718,33 @@ class _SettingsOverlay extends StatelessWidget {
                       selected: fill,
                       onTap: () => onFill(true),
                     ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                Row(
+                  children: [
+                    const Eyebrow('QUALITY', color: P.teal, size: 11),
+                    const SizedBox(width: 10),
+                    Text(quality == null ? 'auto · sized to grid' : 'manual',
+                        style: mono(color: P.greyDim, size: 10)),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: [
+                    _PickButton(
+                      label: 'AUTO',
+                      selected: quality == null,
+                      onTap: () => onQuality(null),
+                    ),
+                    for (final q in const [1080, 720, 540, 360])
+                      _PickButton(
+                        label: '${q}p',
+                        selected: quality == q,
+                        onTap: () => onQuality(q),
+                      ),
                   ],
                 ),
                 const SizedBox(height: 22),
@@ -1087,8 +1170,7 @@ class MonitorScreen extends StatelessWidget {
                         style: mono(color: P.grey, size: 11),
                       ),
                       const SizedBox(width: 10),
-                      Pill(session.maxHeight == null ? 'TOP PINNED' : 'AUTO-FIT',
-                          color: P.amber),
+                      const Pill('PINNED', color: P.amber),
                     ],
                   ),
                   const SizedBox(height: 12),
